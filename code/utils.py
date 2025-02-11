@@ -437,7 +437,7 @@ def get_unit_responses(
 
 def get_spike_counts_by_trial(session_id: str, with_tqdm: bool = False) -> pl.DataFrame:
     """Returns a df with len == n_units * n_trials ~= about 1 million rows, with spike counts for baseline and response"""
-    trials_with_windows = (
+    trials_with_intervals = (
         get_df('trials')
         .filter(
             pl.col('session_id') == session_id
@@ -460,12 +460,12 @@ def get_spike_counts_by_trial(session_id: str, with_tqdm: bool = False) -> pl.Da
         obs_intervals = unit['obs_intervals'][0]
         unit_spike_times = spike_times[unit['unit_id']]
         trials = (
-            trials_with_windows
+            trials_with_intervals
             .filter(
                 pl.col('session_id') == session_id,
                 *[
-                    (pl.col(window).list[0] >= obs_intervals[0]) & (pl.col(window).list[1] <= obs_intervals[1]) 
-                    for window in ('baseline', 'response')
+                    (pl.col(interval).list[0] >= obs_intervals[0]) & (pl.col(interval).list[1] <= obs_intervals[1]) 
+                    for interval in ('baseline', 'response')
                 ]  
             )            
         )
@@ -473,14 +473,17 @@ def get_spike_counts_by_trial(session_id: str, with_tqdm: bool = False) -> pl.Da
             'trial_index': trials['trial_index'], 
             'unit_id': [unit['unit_id']] * len(trials),
         }
-        for window in ('baseline', 'response'):
-            counts[window] = []
-            for start, stop in np.searchsorted(unit_spike_times, trials[window].to_list()):
-                if 0 <= start <= stop <= len(unit_spike_times):
+        for interval in ('baseline', 'response'):
+            counts[interval] = []
+            for start, stop in np.searchsorted(unit_spike_times, trials[interval].to_list()):
+                # searchsorted with intervals always returns two numbers, even if there are no spikes in the interval: we have to disambiguate "out of bounds" from "no spikes in interval"
+                if 0 <= start < stop <= len(unit_spike_times):
                     count = stop - start
+                elif start == stop and 0 < start and stop < len(unit_spike_times):
+                    count = 0
                 else:
                     count = None
-                counts[window].append(count)
+                counts[interval].append(count)
         assert all(len(counts[k]) == len(trials) for k in counts)
         results.append(counts)
     return pl.concat((pl.DataFrame(r) for r in results), how='vertical_relaxed')
