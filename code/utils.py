@@ -77,7 +77,6 @@ def setup_logging(
 
     Note: if file logging is enabled in a multiprocessing/multithreading context, a `queue` should be set to True
     to correctly handle logs from multiple processes/threads. In this mode, a QueueListener is returned.
-    When processes/threads shutdown, `QueueListener().stop()` must be called to ensure all logs are captured correctly.
     The `queue_logging()` context manager is provided to handle this within a process/thread:
 
         ```python
@@ -229,7 +228,7 @@ def _get_spike_times_single_nwb(nwb_path: str | pathlib.Path, unit_ids: str | It
         logger.debug(f"Got spike times from hdf5 directly in {time.time() - t0:.2f}s")
         return unit_id_to_spike_times
 
-def get_spike_times(unit_ids: str | Iterable[str]) -> dict[str, npt.NDArray[np.float64]]:
+def get_spike_times(unit_ids: str | Iterable[str], with_tqdm: bool = False) -> dict[str, npt.NDArray[np.float64]]:
     """"""
     if isinstance(unit_ids, str):
         unit_ids = (unit_ids,)
@@ -252,7 +251,10 @@ def get_spike_times(unit_ids: str | Iterable[str]) -> dict[str, npt.NDArray[np.f
             )
             future_to_nwb_session_id[future] = session_id
         unit_id_to_spike_times = {}
-        for future in tqdm.tqdm(concurrent.futures.as_completed(future_to_nwb_session_id), total=len(tuple(future_to_nwb_session_id)), unit='sessions', desc=f"Getting spike times ({len(unit_ids)} units)"):
+        iterable = concurrent.futures.as_completed(future_to_nwb_session_id)
+        if with_tqdm:
+            iterable = tqdm.tqdm(iterable, total=len(tuple(future_to_nwb_session_id)), unit='sessions', desc=f"Getting spike times ({len(unit_ids)} units)") 
+        for future in iterable:
             unit_id_to_spike_times.update(future.result())
     assert len(unit_id_to_spike_times) == len(unit_ids)
     return unit_id_to_spike_times
@@ -432,6 +434,56 @@ def get_unit_responses(
             for future in concurrent.futures.as_completed(futures):
                 conditions_with_responses.extend(future.result())
     return conditions_with_responses
+
+def get_spike_counts_by_trial(session_id: str, with_tqdm: bool = False) -> pl.DataFrame:
+    """Returns a df with len == n_units * n_trials ~= about 1 million rows, with spike counts for baseline and response"""
+    trials_with_windows = (
+        get_df('trials')
+        .filter(
+            pl.col('session_id') == session_id
+        )
+        .select(
+            'session_id',
+            'trial_index',
+            baseline=pl.concat_list(pl.col('quiescent_start_time'), pl.col('quiescent_start_time') + 1.5),
+            response=pl.concat_list(pl.col('stim_start_time'), pl.col('stim_start_time') + 3),
+        )
+    )
+    units = get_df('units').filter(pl.col('session_id') == session_id)
+    spike_times: dict[str, npt.NDArray] = get_spike_times(units['unit_id'])
+    results: list[dict] = []
+    units_iterable = units.iter_rows(named=True)
+    if with_tqdm:
+        units_iterable = tqdm.tqdm(units_iterable, total=len(units), unit='units')
+    for unit in units_iterable:
+        assert len(unit['obs_intervals']) == 1
+        obs_intervals = unit['obs_intervals'][0]
+        unit_spike_times = spike_times[unit['unit_id']]
+        trials = (
+            trials_with_windows
+            .filter(
+                pl.col('session_id') == session_id,
+                *[
+                    (pl.col(window).list[0] >= obs_intervals[0]) & (pl.col(window).list[1] <= obs_intervals[1]) 
+                    for window in ('baseline', 'response')
+                ]  
+            )            
+        )
+        counts = {
+            'trial_index': trials['trial_index'], 
+            'unit_id': [unit['unit_id']] * len(trials),
+        }
+        for window in ('baseline', 'response'):
+            counts[window] = []
+            for start, stop in np.searchsorted(unit_spike_times, trials[window].to_list()):
+                if 0 <= start <= stop <= len(unit_spike_times):
+                    count = stop - start
+                else:
+                    count = None
+                counts[window].append(count)
+        assert all(len(counts[k]) == len(trials) for k in counts)
+        results.append(counts)
+    return pl.concat((pl.DataFrame(r) for r in results), how='vertical_relaxed')
 
 # paths ----------------------------------------------------------- #
 @functools.cache

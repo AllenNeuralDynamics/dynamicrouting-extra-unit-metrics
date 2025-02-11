@@ -1,9 +1,11 @@
 # stdlib imports --------------------------------------------------- #
 import argparse
+import concurrent.futures
 import dataclasses
 import json
 import functools
 import logging
+import multiprocessing
 import pathlib
 import time
 import types
@@ -15,10 +17,12 @@ from typing import Any, Literal
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+import polars as pl
 import matplotlib
 import matplotlib.pyplot as plt
 import sklearn
 import pynwb
+import tqdm
 import upath
 import zarr
 
@@ -125,24 +129,7 @@ def process_session(session_id: str, params: "Params", test: int = 0) -> None:
 @dataclasses.dataclass
 class Params:
     session_id: str
-    
-    nUnitSamples: int = 20
-    unitSampleSize: int = 20
-    windowDur: float = 1
-    binSize: float = 1
-    nShuffles: int | str = 100
-    binStart: int = -windowDur
-    n_units: list = dataclasses.field(default_factory=lambda: [5, 10, 20, 40, 60, 'all'])
-    decoder_type: str | Literal['linearSVC', 'LDA', 'RandomForest', 'LogisticRegression'] = 'LogisticRegression'
 
-    @property
-    def bins(self) -> npt.NDArray[np.float64]:
-        return np.arange(self.binStart, self.windowDur+self.binSize, self.binSize)
-
-    @property
-    def nBins(self) -> int:
-        return self.bins.size - 1
-    
     def to_dict(self) -> dict[str, Any]:
         """dict of field name: value pairs, including values from property getters"""
         return dataclasses.asdict(self) | {k: getattr(self, k) for k in dir(self.__class__) if isinstance(getattr(self.__class__, k), property)}
@@ -187,9 +174,9 @@ def main():
     # if session_id is passed as a command line argument, we will only process that session,
     # otherwise we process all session IDs that match filtering criteria:    
     session_table = pd.read_parquet(utils.get_datacube_dir() / 'session_table.parquet')
-    session_table['issues']=session_table['issues'].astype(str)
+    session_table['issues'] = session_table['issues'].astype(str)
     session_ids: list[str] = session_table.query(args.session_table_query)['session_id'].values.tolist()
-    logger.debug(f"Found {len(session_ids)} session_ids available for use after filtering")
+    logger.info(f"Got {len(session_ids)} session_ids from filtered session table")
     
     if args.session_id is not None:
         if args.session_id not in session_ids:
@@ -202,21 +189,22 @@ def main():
         session_ids = set(session_ids) & set(p.stem for p in utils.get_nwb_paths())
     else:
         logger.info(f"Using list of {len(session_ids)} session_ids after filtering")
-    
-    # run processing function for each session, with test mode implemented:
-    for session_id in session_ids:
-        try:
-            process_session(session_id, params=Params(session_id=session_id, **params), test=args.test, skip_existing=args.skip_existing)
-        except Exception as e:
-            logger.exception(f'{session_id} | Failed:')
-        else:
-            logger.info(f'{session_id} | Completed')
 
-        if args.test:
-            logger.info("Test mode: exiting after first session")
-            break
-    utils.ensure_nonempty_results_dir()
-    logger.info(f"Time elapsed: {time.time() - t0:.2f} s")
+    with concurrent.futures.ProcessPoolExecutor(max_workers=None, mp_context=multiprocessing.get_context('spawn')) as executor:
+        results = []
+        futures = []
+        for session_id in session_ids:
+            futures.append(executor.submit(utils.get_spike_counts_by_trial, session_id))
+            if args.test:
+                break
+        for future in tqdm.tqdm(concurrent.futures.as_completed(futures), total=len(futures), unit='sessions'):
+            results.append(future.result())
+    if results:
+        path = '/results/spike_counts.parquet'
+        logger.info(f"Writing results to {path}")
+        df = pl.concat(results, how='vertical_relaxed')
+        df.write_parquet(path, compression_level=22)
+        print(df.describe())
 
 if __name__ == "__main__":
     main()
