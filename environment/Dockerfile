@@ -1,4 +1,4 @@
-# hash:sha256:fb02d029d0165a438bfd6b6db77cca8e2bcdd79d834dd92f029cabc566b79a94
+# hash:sha256:065de727fcfe6e112bc6c313578ef8b7fc4ce615f4ad2f1cd6755c008d3cfc69
 ARG REGISTRY_HOST
 FROM $REGISTRY_HOST/codeocean/mambaforge3:23.1.0-4-python3.10.12-ubuntu22.04
 
@@ -22,5 +22,6 @@ RUN pip3 install -U --no-cache-dir \
     pynwb==2.8.2 \
     s3fs==2024.10.0 \
     scikit-learn==1.5.2 \
+    statsmodels==0.14.4 \
     universal-pathlib==0.1.4 \
     zarr==2.17.2

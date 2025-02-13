@@ -50,6 +50,10 @@
 					"version": "1.5.2"
 				},
 				{
+					"name": "statsmodels",
+					"version": "0.14.4"
+				},
+				{
 					"name": "universal-pathlib",
 					"version": "0.1.4"
 				},

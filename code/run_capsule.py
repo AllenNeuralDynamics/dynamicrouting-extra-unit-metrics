@@ -11,7 +11,7 @@ import time
 import types
 import typing
 import uuid
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 # 3rd-party imports necessary for processing ----------------------- #
 import numpy as np
@@ -25,6 +25,10 @@ import pynwb
 import tqdm
 import upath
 import zarr
+
+import statsmodels.api as sm
+from statsmodels.formula.api import ols, glm
+import statsmodels.stats.multitest as smm
 
 import utils
 
@@ -199,12 +203,107 @@ def main():
                 break
         for future in tqdm.tqdm(concurrent.futures.as_completed(futures), total=len(futures), unit='sessions'):
             results.append(future.result())
-    if results:
-        path = '/results/spike_counts.parquet'
-        logger.info(f"Writing results to {path}")
-        df = pl.concat(results, how='vertical_relaxed')
-        df.write_parquet(path, compression_level=22)
-        print(df.describe())
+
+    if not results:
+        logger.warning('No results returned, with no errors: list of sessions may be empty')
+        return
+
+    path = '/results/spike_counts.parquet'
+    logger.info(f"Writing results to {path}")
+    df = pl.concat(results, how='vertical_relaxed')
+    df.write_parquet(path)#, compression_level=22)
+    print(df.describe())
+
+    # calculate time vs spike count correlation for each unit, in baseline and response intervals
+    corr_df = (
+        df.lazy()
+        .with_columns(
+            session_id=pl.col('unit_id').str.split('_').list.slice(0, 2).list.join('_')
+        )
+        .join(
+            other=utils.get_df('trials').lazy().select('session_id', 'trial_index', 'context_name', 'start_time'),
+            on=['session_id', 'trial_index'],
+            how='left',
+        )
+        .group_by('unit_id', 'context_name')
+        .agg(
+            pl.corr('start_time', 'baseline').pow(2).alias('baseline_r2'),
+            pl.corr('start_time', 'response').pow(2).alias('response_r2'),
+        )
+        .group_by('unit_id')
+        .agg(
+            vis_baseline_r2=pl.col('baseline_r2').filter(pl.col('context_name')=='vis').first(),
+            aud_baseline_r2=pl.col('baseline_r2').filter(pl.col('context_name')=='aud').first(),
+            vis_response_r2=pl.col('response_r2').filter(pl.col('context_name')=='vis').first(),
+            aud_response_r2=pl.col('response_r2').filter(pl.col('context_name')=='aud').first(),
+        )
+        .collect(streaming=True)
+    )
+    print(corr_df.describe())
+    corr_df.write_parquet('/results/corr_values.parquet')
+    
+    return 
+    
+    # ------------------------------------------------------------------------------------------------
+    # calculate anova stat for each unit
+    anova_df = (
+        df
+        .drop_nulls()
+        .drop_nans()
+        .with_columns(
+            session_id=pl.col('unit_id').str.split('_').list.slice(0, 2).list.join('_')
+        )
+        # get trial metadata ----------------------------------------------- #
+        .join(
+            other=(
+                utils.get_df('trials')
+                .select('session_id', 'trial_index', 'block_index', 'context_name', 'start_time')
+            ),
+            on=['session_id', 'trial_index',],
+            how='inner',
+        )
+        # ------------------------------------------------------------------ #
+        .group_by("unit_id")
+        .agg(
+            *[
+                pl.map_groups(
+                    exprs=['block_index', 'context_name', interval_name],
+                    function=functools.partial(fit_anova, interval_name=interval_name),
+                    return_dtype=pl.Struct,
+                ).alias(f"anova_{interval_name}")
+                for interval_name in ['baseline', 'response']
+            ]
+        )
+        .unnest('anova_baseline', 'anova_response')
+        .fill_nan(None)
+    )
+    print(anova_df.describe())
+    anova_df.write_parquet('/results/anova_values.parquet')
+
+def fit_anova(list_of_series: Sequence[pl.Series], interval_name: str) -> pl.Series:
+        if len(list_of_series) != 3:
+            raise ValueError(f"Expected 3 series, got {len(list_of_series)}")
+        assert all(s.len() == list_of_series[0].len() for s in list_of_series)
+        data = (
+            pl.DataFrame(
+                {'block': list_of_series[0], 'context': list_of_series[1], 'y': list_of_series[2]}
+            )
+            .drop_nans()
+            .drop_nulls() 
+        )
+        stats = ('PR(>F)', 'F')
+        factors = ('context', 'block')
+        results = {f'{interval_name}_{stat}_{factor}': np.nan for stat in stats for factor in factors}
+        if len(data) <= 2:
+            return results
+        if len(data['context'].unique()) == 1:
+            return results
+        if len(data['block'].unique()) == 1:
+            return results
+        model = ols('y ~ context + block', data=data.to_pandas()).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
+        results = {f'{interval_name}_{stat}_{factor}': anova_table.loc[factor, stat] for stat in stats for factor in factors}
+        return results
 
 if __name__ == "__main__":
     main()
