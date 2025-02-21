@@ -162,7 +162,7 @@ def main():
 
     # if any of the parameters required for processing are passed as command line arguments, we can
     # get a new params object with these values in place of the defaults:
-    session_ids = [p.stem.remove('_units_ks4') for p in pathlib.Path('/data').rglob('*_units_ks4.parquet')]
+    session_ids = [p.stem.removesuffix('_ks4_units') for p in pathlib.Path('/data').rglob('*_ks4_units.parquet')]
     # session_ids = pl.scan_parquet('/data/ks4/ks4_units.parquet').select('session_id').collect()['session_id']
     with concurrent.futures.ProcessPoolExecutor(max_workers=None, mp_context=multiprocessing.get_context('spawn')) as executor:
         results = []
