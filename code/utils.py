@@ -459,11 +459,14 @@ def get_spike_counts_by_trial(session_id: str, with_tqdm: bool = False) -> pl.Da
     units = pl.scan_parquet(f'/data/ks4/{session_id}_ks4_units.parquet').filter(pl.col('session_id') == session_id).collect()
     assert len(obs_intervals) == 2
     results: list[dict] = []
+    logger.info(f"{session_id} | {len(units) = }")
     units_iterable = units.iter_rows(named=True)
     if with_tqdm:
         units_iterable = tqdm.tqdm(units_iterable, total=len(units), unit='units')
     for unit in units_iterable:
         unit_spike_times = unit['spike_times']
+        logger.info(f"{unit['unit_id']} | {len(unit_spike_times) = }")
+
         trials = (
             trials_with_intervals
             .filter(
