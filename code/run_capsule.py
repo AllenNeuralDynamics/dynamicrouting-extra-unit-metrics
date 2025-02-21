@@ -211,7 +211,7 @@ def main():
         .collect(streaming=True)
     )
     print(corr_df.describe())
-    corr_df.write_parquet('/results/corr_values.parquet')
+    corr_df.write_parquet('/results/corr_values_ks4.parquet')
     
     return 
     
