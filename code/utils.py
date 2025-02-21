@@ -455,7 +455,7 @@ def get_spike_counts_by_trial(session_id: str, with_tqdm: bool = False) -> pl.Da
             pl.col('script_name') == 'DynamicRouting1',
             pl.col('session_id') == session_id,
         )
-    )['start_time', 'stop_time'].to_list()
+    )['start_time', 'stop_time'].to_numpy()[0]
     units = pl.scan_parquet(f'/data/ks4/{session_id}_ks4_units.parquet').filter(pl.col('session_id') == session_id).collect()
     assert len(obs_intervals) == 2
     results: list[dict] = []
