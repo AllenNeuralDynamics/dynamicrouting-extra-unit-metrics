@@ -449,16 +449,15 @@ def get_spike_counts_by_trial(session_id: str, with_tqdm: bool = False) -> pl.Da
             response=pl.concat_list(pl.col('stim_start_time'), pl.col('stim_start_time') + 3),
         )
     )
-    units = get_df('units').filter(pl.col('session_id') == session_id)
-    spike_times: dict[str, npt.NDArray] = get_spike_times(units['unit_id'])
+    obs_intervals = get_df('trials').filter(pl.col('script_name') == 'DynamicRouting1')['start_time', 'stop_time'].to_list()
+    units = pl.scan_parquet('/data/ks4/ks4_units.parquet').filter(pl.col('session_id') == session_id).collect()
+    assert len(obs_intervals) == 2
     results: list[dict] = []
     units_iterable = units.iter_rows(named=True)
     if with_tqdm:
         units_iterable = tqdm.tqdm(units_iterable, total=len(units), unit='units')
     for unit in units_iterable:
-        assert len(unit['obs_intervals']) == 1
-        obs_intervals = unit['obs_intervals'][0]
-        unit_spike_times = spike_times[unit['unit_id']]
+        unit_spike_times = unit['spike_times']
         trials = (
             trials_with_intervals
             .filter(

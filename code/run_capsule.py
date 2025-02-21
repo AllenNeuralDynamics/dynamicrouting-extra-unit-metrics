@@ -163,42 +163,12 @@ def main():
     # if any of the parameters required for processing are passed as command line arguments, we can
     # get a new params object with these values in place of the defaults:
 
-    params = {}
-    for field in dataclasses.fields(Params):
-        if (val := getattr(args, field.name, None)) is not None:
-            params[field.name] = val
-    
-    override_params = json.loads(args.override_params_json)
-    if override_params:
-        for k, v in override_params.items():
-            if k in params:
-                logger.info(f"Overriding value of {k!r} from command line arg with value specified in `override_params_json`")
-            params[k] = v
-            
-    # if session_id is passed as a command line argument, we will only process that session,
-    # otherwise we process all session IDs that match filtering criteria:    
-    session_table = pd.read_parquet(utils.get_datacube_dir() / 'session_table.parquet')
-    session_table['issues'] = session_table['issues'].astype(str)
-    session_ids: list[str] = session_table.query(args.session_table_query)['session_id'].values.tolist()
-    logger.info(f"Got {len(session_ids)} session_ids from filtered session table")
-    
-    if args.session_id is not None:
-        if args.session_id not in session_ids:
-            logger.warning(f"{args.session_id!r} not in filtered session_ids: exiting")
-            exit()
-        logger.info(f"Using single session_id {args.session_id} provided via command line argument")
-        session_ids = [args.session_id]
-    elif utils.is_pipeline(): 
-        # only one nwb will be available 
-        session_ids = set(session_ids) & set(p.stem for p in utils.get_nwb_paths())
-    else:
-        logger.info(f"Using list of {len(session_ids)} session_ids after filtering")
-
+    session_ids = pl.scan_parquet('/data/ks4/ks4_units.parquet').select('session_id').collect()['session_id']
     with concurrent.futures.ProcessPoolExecutor(max_workers=None, mp_context=multiprocessing.get_context('spawn')) as executor:
         results = []
         futures = []
         for session_id in session_ids:
-            futures.append(executor.submit(utils.get_spike_counts_by_trial, session_id))
+            futures.append(executor.submit(utils.get_spike_counts_by_trial, session_id))    
             if args.test:
                 break
         for future in tqdm.tqdm(concurrent.futures.as_completed(futures), total=len(futures), unit='sessions'):
@@ -244,66 +214,6 @@ def main():
     
     return 
     
-    # ------------------------------------------------------------------------------------------------
-    # calculate anova stat for each unit
-    anova_df = (
-        df
-        .drop_nulls()
-        .drop_nans()
-        .with_columns(
-            session_id=pl.col('unit_id').str.split('_').list.slice(0, 2).list.join('_')
-        )
-        # get trial metadata ----------------------------------------------- #
-        .join(
-            other=(
-                utils.get_df('trials')
-                .select('session_id', 'trial_index', 'block_index', 'context_name', 'start_time')
-            ),
-            on=['session_id', 'trial_index',],
-            how='inner',
-        )
-        # ------------------------------------------------------------------ #
-        .group_by("unit_id")
-        .agg(
-            *[
-                pl.map_groups(
-                    exprs=['block_index', 'context_name', interval_name],
-                    function=functools.partial(fit_anova, interval_name=interval_name),
-                    return_dtype=pl.Struct,
-                ).alias(f"anova_{interval_name}")
-                for interval_name in ['baseline', 'response']
-            ]
-        )
-        .unnest('anova_baseline', 'anova_response')
-        .fill_nan(None)
-    )
-    print(anova_df.describe())
-    anova_df.write_parquet('/results/anova_values.parquet')
-
-def fit_anova(list_of_series: Sequence[pl.Series], interval_name: str) -> pl.Series:
-        if len(list_of_series) != 3:
-            raise ValueError(f"Expected 3 series, got {len(list_of_series)}")
-        assert all(s.len() == list_of_series[0].len() for s in list_of_series)
-        data = (
-            pl.DataFrame(
-                {'block': list_of_series[0], 'context': list_of_series[1], 'y': list_of_series[2]}
-            )
-            .drop_nans()
-            .drop_nulls() 
-        )
-        stats = ('PR(>F)', 'F')
-        factors = ('context', 'block')
-        results = {f'{interval_name}_{stat}_{factor}': np.nan for stat in stats for factor in factors}
-        if len(data) <= 2:
-            return results
-        if len(data['context'].unique()) == 1:
-            return results
-        if len(data['block'].unique()) == 1:
-            return results
-        model = ols('y ~ context + block', data=data.to_pandas()).fit()
-        anova_table = sm.stats.anova_lm(model, typ=2)
-        results = {f'{interval_name}_{stat}_{factor}': anova_table.loc[factor, stat] for stat in stats for factor in factors}
-        return results
 
 if __name__ == "__main__":
     main()
