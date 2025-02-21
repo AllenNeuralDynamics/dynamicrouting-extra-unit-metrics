@@ -449,7 +449,13 @@ def get_spike_counts_by_trial(session_id: str, with_tqdm: bool = False) -> pl.Da
             response=pl.concat_list(pl.col('stim_start_time'), pl.col('stim_start_time') + 3),
         )
     )
-    obs_intervals = get_df('trials').filter(pl.col('script_name') == 'DynamicRouting1')['start_time', 'stop_time'].to_list()
+    obs_intervals = (
+        get_df('epochs')
+        .filter(
+            pl.col('script_name') == 'DynamicRouting1',
+            pl.col('session_id') == session_id,
+        )
+    )['start_time', 'stop_time'].to_list()
     units = pl.scan_parquet(f'/data/ks4/{session_id}_ks4_units.parquet').filter(pl.col('session_id') == session_id).collect()
     assert len(obs_intervals) == 2
     results: list[dict] = []
