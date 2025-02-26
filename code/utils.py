@@ -456,8 +456,9 @@ def get_spike_counts_by_trial(session_id: str, with_tqdm: bool = False) -> pl.Da
             pl.col('session_id') == session_id,
         )
     )['start_time', 'stop_time'].to_numpy()[0]
-    units = pl.scan_parquet(f'/data/ks4/{session_id}_ks4_units.parquet').filter(pl.col('session_id') == f"{session_id}_ks4").collect()
+    units = pl.scan_parquet(f'/data/ks4/{session_id}_ks4_units.parquet').collect()
     assert len(obs_intervals) == 2
+    print(len(units))
     results: list[dict] = []
     units_iterable = units.iter_rows(named=True)
     if with_tqdm:
