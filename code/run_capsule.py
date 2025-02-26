@@ -227,15 +227,19 @@ def main():
         )
         .group_by('unit_id', 'context_name')
         .agg(
-            pl.corr('start_time', 'baseline').pow(2).alias('baseline_r2'),
-            pl.corr('start_time', 'response').pow(2).alias('response_r2'),
+            baseline_r=pl.corr('start_time', 'baseline'),
+            response_r=pl.corr('start_time', 'response'),
         )
         .group_by('unit_id')
         .agg(
-            vis_baseline_r2=pl.col('baseline_r2').filter(pl.col('context_name')=='vis').first(),
-            aud_baseline_r2=pl.col('baseline_r2').filter(pl.col('context_name')=='aud').first(),
-            vis_response_r2=pl.col('response_r2').filter(pl.col('context_name')=='vis').first(),
-            aud_response_r2=pl.col('response_r2').filter(pl.col('context_name')=='aud').first(),
+            vis_baseline_r=pl.col('baseline_r').filter(pl.col('context_name')=='vis').first(),
+            aud_baseline_r=pl.col('baseline_r').filter(pl.col('context_name')=='aud').first(),
+            vis_response_r=pl.col('response_r').filter(pl.col('context_name')=='vis').first(),
+            aud_response_r=pl.col('response_r').filter(pl.col('context_name')=='aud').first(),
+            vis_baseline_r2=pl.col('baseline_r').filter(pl.col('context_name')=='vis').first().pow(2),
+            aud_baseline_r2=pl.col('baseline_r').filter(pl.col('context_name')=='aud').first().pow(2),
+            vis_response_r2=pl.col('response_r').filter(pl.col('context_name')=='vis').first().pow(2),
+            aud_response_r2=pl.col('response_r').filter(pl.col('context_name')=='aud').first().pow(2),
         )
         .collect(streaming=True)
     )
