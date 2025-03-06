@@ -195,25 +195,37 @@ def main():
         logger.info(f"Using list of {len(session_ids)} session_ids after filtering")
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=None, mp_context=multiprocessing.get_context('spawn')) as executor:
-        results = []
+        dfs = []
         futures = []
         for session_id in session_ids:
-            futures.append(executor.submit(utils.get_spike_counts_by_trial, session_id))
+            futures.append(
+                executor.submit(
+                    utils.get_per_trial_spike_times, 
+                    starts=(pl.col('stim_start_time') - 2, pl.col('stim_start_time'), ),
+                    ends=(pl.col('stim_start_time'), pl.col('stim_start_time') + 3, ),
+                    col_names=('baseline', 'response', ),
+                    session_id=session_id,
+                    as_counts=True,
+                    keep_only_necessary_cols=True,
+                )
+            )
             if args.test:
                 break
-        for future in tqdm.tqdm(concurrent.futures.as_completed(futures), total=len(futures), unit='sessions'):
-            results.append(future.result())
-
-    if not results:
+        for future in tqdm.tqdm(concurrent.futures.as_completed(futures), total=len(futures), unit='session'):
+            result = future.result() # may raise here
+            dfs.append(
+                result
+                .select('trial_index', 'unit_id', 'baseline', 'response')
+            )
+    if len(dfs) == 0:
         logger.warning('No results returned, with no errors: list of sessions may be empty')
         return
-
+    df = pl.concat(dfs)
+    print(df.describe())
     path = '/results/spike_counts.parquet'
     logger.info(f"Writing results to {path}")
-    df = pl.concat(results, how='vertical_relaxed')
-    df.write_parquet(path)#, compression_level=22)
-    print(df.describe())
-
+    df.write_parquet(path) #, compression_level=22)
+    return
     # calculate time vs spike count correlation for each unit, in baseline and response intervals
     corr_df = (
         df.lazy()
